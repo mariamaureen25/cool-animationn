@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Aurora Flow</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background: #05060a;
+    height: 100%;
+    width: 100%;
+    cursor: crosshair;
+  }
+  canvas {
+    display: block;
+  }
+  #label {
+    position: fixed;
+    bottom: 18px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: rgba(255,255,255,0.35);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    pointer-events: none;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="label">move your cursor</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H;
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// Mouse state
+let mouse = { x: W/2, y: H/2, active: false, vx: 0, vy: 0, lastX: W/2, lastY: H/2 };
+window.addEventListener('mousemove', e => {
+  mouse.lastX = mouse.x;
+  mouse.lastY = mouse.y;
+  mouse.x = e.clientX;
+  mouse.y = e.clientY;
+  mouse.vx = mouse.x - mouse.lastX;
+  mouse.vy = mouse.y - mouse.lastY;
+  mouse.active = true;
+});
+window.addEventListener('touchmove', e => {
+  const t = e.touches[0];
+  mouse.lastX = mouse.x;
+  mouse.lastY = mouse.y;
+  mouse.x = t.clientX;
+  mouse.y = t.clientY;
+  mouse.vx = mouse.x - mouse.lastX;
+  mouse.vy = mouse.y - mouse.lastY;
+  mouse.active = true;
+}, { passive: true });
+
+// Simplex-ish noise (cheap value noise, good enough for flow field)
+function fract(x){ return x - Math.floor(x); }
+function hash(x, y) {
+  return fract(Math.sin(x * 127.1 + y * 311.7) * 43758.5453);
+}
+function noise(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf);
+  const v = yf * yf * (3 - 2 * yf);
+  const a = hash(xi, yi), b = hash(xi + 1, yi);
+  const c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1);
+  return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v;
+}
+
+const PALETTE = [
+  [64, 224, 208],   // turquoise
+  [147, 112, 219],  // purple
+  [255, 105, 180],  // pink
+  [80, 200, 255],   // sky blue
+  [255, 180, 90],   // amber
+];
+
+function lerpColor(c1, c2, t) {
+  return [
+    c1[0] + (c2[0] - c1[0]) * t,
+    c1[1] + (c2[1] - c1[1]) * t,
+    c1[2] + (c2[2] - c1[2]) * t,
+  ];
+}
+
+function paletteColor(t) {
+  t = ((t % 1) + 1) % 1;
+  const n = PALETTE.length;
+  const scaled = t * n;
+  const i = Math.floor(scaled) % n;
+  const j = (i + 1) % n;
+  const f = scaled - Math.floor(scaled);
+  return lerpColor(PALETTE[i], PALETTE[j], f);
+}
+
+const NUM_PARTICLES = Math.min(1400, Math.floor((W * H) / 900));
+const particles = [];
+const NOISE_SCALE = 0.0028;
+const TIME_SCALE = 0.00012;
+
+function makeParticle() {
+  return {
+    x: Math.random() * W,
+    y: Math.random() * H,
+    vx: 0,
+    vy: 0,
+    life: Math.random() * 200,
+    maxLife: 200 + Math.random() * 300,
+    hueSeed: Math.random(),
+    speed: 0.6 + Math.random() * 1.2,
+  };
+}
+for (let i = 0; i < NUM_PARTICLES; i++) particles.push(makeParticle());
+
+// Fade layer for trails
+ctx.fillStyle = '#05060a';
+ctx.fillRect(0, 0, W, H);
+
+let t = 0;
+
+function step() {
+  t += 1;
+
+  // Trail fade
+  ctx.fillStyle = 'rgba(5, 6, 10, 0.12)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  const time = t * TIME_SCALE;
+
+  for (let p of particles) {
+    // Flow field angle from noise
+    const angle = noise(p.x * NOISE_SCALE, p.y * NOISE_SCALE + time * 40) * Math.PI * 4;
+
+    let ax = Math.cos(angle) * p.speed;
+    let ay = Math.sin(angle) * p.speed;
+
+    // Mouse influence: swirl + push
+    if (mouse.active) {
+      const dx = p.x - mouse.x;
+      const dy = p.y - mouse.y;
+      const dist2 = dx*dx + dy*dy;
+      const radius = 220;
+      if (dist2 < radius * radius) {
+        const dist = Math.sqrt(dist2) || 0.001;
+        const falloff = 1 - dist / radius;
+        // swirl (perpendicular)
+        const swirl = falloff * 2.2;
+        ax += (-dy / dist) * swirl;
+        ay += (dx / dist) * swirl;
+        // gentle push based on mouse velocity
+        ax += mouse.vx * 0.03 * falloff;
+        ay += mouse.vy * 0.03 * falloff;
+      }
+    }
+
+    p.vx = p.vx * 0.9 + ax * 0.5;
+    p.vy = p.vy * 0.9 + ay * 0.5;
+
+    p.x += p.vx;
+    p.y += p.vy;
+    p.life += 1;
+
+    // wrap edges
+    if (p.x < 0) p.x = W;
+    if (p.x > W) p.x = 0;
+    if (p.y < 0) p.y = H;
+    if (p.y > H) p.y = 0;
+
+    if (p.life > p.maxLife) {
+      p.x = Math.random() * W;
+      p.y = Math.random() * H;
+      p.life = 0;
+      p.maxLife = 200 + Math.random() * 300;
+    }
+
+    const speedMag = Math.sqrt(p.vx*p.vx + p.vy*p.vy);
+    const colorT = p.hueSeed + time * 2 + speedMag * 0.02;
+    const [r, g, b] = paletteColor(colorT);
+    const alpha = 0.55 + Math.min(speedMag * 0.15, 0.4);
+
+    ctx.beginPath();
+    ctx.fillStyle = `rgba(${r|0}, ${g|0}, ${b|0}, ${alpha})`;
+    ctx.arc(p.x, p.y, 1.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+
+  // decay mouse velocity so swirl calms when idle
+  mouse.vx *= 0.9;
+  mouse.vy *= 0.9;
+
+  requestAnimationFrame(step);
+}
+
+requestAnimationFrame(step);
+</script>
+</body>
+</html>
